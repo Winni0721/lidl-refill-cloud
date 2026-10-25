@@ -1,0 +1,66 @@
+name: lidl-refill
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub's minimum; runs are often a few minutes late
+  workflow_dispatch:
+
+concurrency:
+  group: lidl-refill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # keep-alive: re-enable the schedule (GitHub disables it after 60 idle days)
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LIDL_STATE_DIR: ${{ github.workspace }}/state
+    steps:
+      - uses: actions/checkout@v7
+
+      # Tokens, login back-off and pending refills persist between runs, encrypted.
+      - name: Restore state
+        uses: actions/cache/restore@v6
+        with:
+          path: state.enc
+          key: lidl-state-${{ github.run_id }}
+          restore-keys: lidl-state-
+
+      - name: Check allowance / refill
+        env:
+          LIDL_USER: ${{ secrets.LIDL_USER }}
+          LIDL_PASS: ${{ secrets.LIDL_PASS }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+          LIDL_DRY_RUN: ${{ vars.LIDL_DRY_RUN || '0' }}
+          LIDL_VERBOSE: ${{ vars.LIDL_VERBOSE || '0' }}
+        run: |
+          mkdir -p "$LIDL_STATE_DIR"
+          if [ -f state.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:STATE_KEY -in state.enc \
+              -out "$LIDL_STATE_DIR/.lidl-refill-state.json" || echo "State unlesbar, starte neu"
+          fi
+          # Two checks per run, 2 minutes apart, to bridge GitHub's schedule gaps.
+          python3 lidl_refill.py || true
+          sleep 120
+          python3 lidl_refill.py || true
+          if [ -f "$LIDL_STATE_DIR/.lidl-refill-state.json" ]; then
+            openssl enc -aes-256-cbc -pbkdf2 -pass env:STATE_KEY \
+              -in "$LIDL_STATE_DIR/.lidl-refill-state.json" -out state.enc
+          fi
+
+      - name: Save state
+        if: always() && hashFiles('state.enc') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: state.enc
+          key: lidl-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Keep schedule alive
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/refill.yml/enable" || true
