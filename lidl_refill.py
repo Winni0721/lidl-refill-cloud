@@ -36,6 +36,7 @@ TOKEN_URL = "https://api.lidl-connect.de/api/token"
 GRAPHQL_URL = "https://api.lidl-connect.de/api/graphql"
 PORTAL_URL = "https://kundenkonto.lidl-connect.de/"
 BUNDLE_PATH = "/assets/brfrontend/dist/production/js/lidl.js"
+FALLBACK_CLIENT = ("lidl", "lidl")  # published in the portal bundle, seen 2026-10-25
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
 LOGIN_BACKOFF = 30 * 60      # after a failed login
@@ -174,7 +175,12 @@ def login(state):
     if not user or not password:
         raise LoginError("LIDL_USER / LIDL_PASS fehlen (in ~/.lidl-refill.env eintragen)")
     if not state.get("client_id"):
-        state["client_id"], state["client_secret"] = discover_client()
+        try:
+            state["client_id"], state["client_secret"] = discover_client()
+        except (LoginError, OSError) as e:
+            # The portal blocks some datacenter IPs; the API itself may not.
+            log(f"Hinweis: {e} – nutze bekannte Client-Kennung")
+            state["client_id"], state["client_secret"] = FALLBACK_CLIENT
     try:
         token_request(state, {"grant_type": "password", "username": user, "password": password,
                               "captcha_code": "", "captcha_token": None}, True)
