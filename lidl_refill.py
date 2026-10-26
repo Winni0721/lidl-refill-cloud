@@ -258,7 +258,7 @@ def offer_is_free(state, offer_id):
     try:
         options = payload["data"]["tariffoptions"]["bookableTariffoptions"]["bookableTariffoptions"]
     except (TypeError, KeyError):
-        return False, f"Optionsliste nicht lesbar (HTTP {status})"
+        return None, f"Optionsliste nicht lesbar (HTTP {status})"  # transient, retry next run
     for o in options or []:
         if o.get("tariffoptionId") == offer_id:
             price = o.get("price")
@@ -334,6 +334,10 @@ def run():
                 state["dry_logged_at"] = now
         else:
             free, info = offer_is_free(state, offer_id)
+            if free is None:
+                log(f"Nachbuchung verschoben: {info}. Neuer Versuch beim nächsten Lauf.")
+                save_state(state)
+                return 1
             if not free:
                 state["refill_paused_until"] = now + REFILL_FAIL_PAUSE
                 log(f"NICHT gebucht: {info}. Pause 60 min – Option im Kundenkonto prüfen.")
